@@ -1,0 +1,9 @@
+[package]
+name = "dust_semantics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+dust_frontend = { path = "../dust_frontend" }
+dust_dir = { path = "../dust_dir" }

@@ -1,0 +1,17 @@
+[package]
+name = "dust_codegen"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow.workspace = true
+
+cranelift-codegen.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
+cranelift-frontend.workspace = true
+
+target-lexicon.workspace = true
+
+dust_dir = { path = "../dust_dir" }

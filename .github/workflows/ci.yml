@@ -1,0 +1,73 @@
+# .github/workflows/ci.yml
+#
+# CI pipeline for the Dust compiler
+#
+# Fix: `actions/setup-rust` does not exist, so we use `dtolnay/rust-toolchain@stable`.
+# Optional: use `Swatinem/rust-cache@v2` for fast incremental builds.
+
+name: dust-ci
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-execute:
+    name: Build & Execute DPL (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace
+        run: cargo build --workspace --verbose
+
+      - name: Run unit tests
+        run: cargo test --workspace --verbose
+
+      - name: Build k_hello_world
+        run: cargo run -p dust -- build examples/K/k_hello_world.ds
+
+      - name: Run k_hello_world
+        run: |
+          ./target/dust/k_hello_world > out.txt
+          grep -q "Hello, Dust" out.txt
+
+      - name: Run k_hello_dust
+        run: |
+          set -e
+            ./target/dust/k_hello_world > out2.txt
+            echo "::group::Hello World Output"
+            cat out2.txt
+            echo "::endgroup::"
+
+      - name: Build k_multiple_emits
+        run: cargo run -p dust -- build examples/K/k_multiple_emits.ds
+
+      - name: Run k_multiple_emits
+        run: |
+          ./target/dust/k_multiple_emits > out.txt
+          diff -u <(printf "First line\nSecond line\nThird line\n") out.txt
+
+      - name: Build k_empty_main
+        run: cargo run -p dust -- build examples/K/k_empty_main.ds
+
+      - name: Run k_empty_main
+        run: ./target/dust/k_empty_main
+
+      - name: Build k_comment_handling
+        run: cargo run -p dust -- build examples/K/k_comment_handling.ds
+
+      - name: Run k_comment_handling
+        run: |
+          ./target/dust/k_comment_handling > out.txt
+          grep -q "Comments OK" out.txt

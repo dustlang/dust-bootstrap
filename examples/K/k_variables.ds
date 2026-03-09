@@ -1,0 +1,36 @@
+// File: k_variables.ds - This file is part of the DPL Toolchain
+// Copyright (c) 2026 Dust LLC, and Contributors
+// Description:
+//   Demonstrates K Regime v0.2 variable declarations and types including:
+//   - Immutable variable bindings (let)
+//   - Mutable variable bindings (mut let)
+//   - Boolean variables
+//   - String variables
+//   - Integer arithmetic
+//
+//   Regime: K (Classical / Deterministic)
+
+K main {
+    // Immutable variable binding
+    let x: K[Int] = 42;
+    emit "Immutable x = {x}";
+    
+    // Mutable variable binding
+    mut let counter: K[Int] = 0;
+    counter = counter + 1;
+    emit "Counter after increment: {counter}";
+    
+    // Boolean variables
+    let flag: K[Bool] = true;
+    emit "Flag is {flag}";
+    
+    // String variables  
+    let message: K[String] = "Hello, Dust!";
+    emit "Message: {message}";
+    
+    // Integer arithmetic
+    let a: K[Int] = 10;
+    let b: K[Int] = 20;
+    let sum: K[Int] = a + b;
+    emit "Sum of {a} + {b} = {sum}";
+}
