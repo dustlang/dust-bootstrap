@@ -23,10 +23,12 @@ pub enum Type {
     Int16,
     Int32,
     Int64,
+    Int128,
     UInt8,
     UInt16,
     UInt32,
     UInt64,
+    UInt128,
     Float32,
     Float64,
     Char,
@@ -35,6 +37,13 @@ pub enum Type {
     Array(Box<Type>, usize),
     Function(Box<Type>, Vec<Type>),
     UserDefined(String),
+    // v0.2 Resource Types
+    Mem,
+    Thread(Box<Type>),
+    Mutex,
+    File,
+    Port,
+    Device,
     Unknown,
 }
 
@@ -46,10 +55,12 @@ impl Type {
                 | Type::Int16
                 | Type::Int32
                 | Type::Int64
+                | Type::Int128
                 | Type::UInt8
                 | Type::UInt16
                 | Type::UInt32
                 | Type::UInt64
+                | Type::UInt128
                 | Type::Float32
                 | Type::Float64
         )
@@ -62,10 +73,28 @@ impl Type {
                 | Type::Int16
                 | Type::Int32
                 | Type::Int64
+                | Type::Int128
                 | Type::UInt8
                 | Type::UInt16
                 | Type::UInt32
                 | Type::UInt64
+                | Type::UInt128
+        )
+    }
+
+    // v0.2: Check if type is a resource type
+    pub fn is_resource(&self) -> bool {
+        matches!(
+            self,
+            Type::Mem | Type::Thread(_) | Type::Mutex | Type::File | Type::Port | Type::Device
+        )
+    }
+
+    // v0.2: Check if type is only allowed in K-regime
+    pub fn requires_k_regime(&self) -> bool {
+        matches!(
+            self,
+            Type::Mem | Type::Thread(_) | Type::Mutex | Type::File | Type::Port | Type::Device
         )
     }
 
@@ -373,6 +402,20 @@ impl TypeInferrer {
                 let expr_type = self.infer_expr(&let_stmt.expr.node)?;
                 self.env.insert(let_stmt.name.text.clone(), expr_type);
                 Ok(Type::Unit)
+            }
+            Stmt::Assign(assign_stmt) => {
+                let expr_type = self.infer_expr(&assign_stmt.expr.node)?;
+                if let Some(target_type) = self.env.get(&assign_stmt.target.text) {
+                    if target_type == expr_type || matches!(target_type, Type::Unknown) {
+                        Ok(Type::Unit)
+                    } else {
+                        Err(TypeError::TypeMismatch(target_type, expr_type))
+                    }
+                } else {
+                    Err(TypeError::UndefinedVariable(
+                        assign_stmt.target.text.clone(),
+                    ))
+                }
             }
             Stmt::Expr(expr_stmt) => self.infer_expr(&expr_stmt.expr.node),
             Stmt::Return(ret) => self.infer_expr(&ret.expr.node),

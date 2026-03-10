@@ -322,18 +322,23 @@ impl Codegen {
 
 pub fn dust_type_to_clif(ty: &str) -> Type {
     match ty {
+        // Primitive types
         "i8" => types::I8,
         "i16" => types::I16,
         "i32" => types::I32,
         "i64" => types::I64,
+        "i128" => types::I128,
         "u8" => types::I8,
         "u16" => types::I16,
         "u32" => types::I32,
         "u64" => types::I64,
+        "u128" => types::I128,
         "f32" => types::F32,
         "f64" => types::F64,
         "bool" => types::I8,
         "char" => types::I32,
+        // v0.2 Resource types (mapped to i64 for handles)
+        "Mem" | "Thread" | "Mutex" | "File" | "Port" | "Device" => types::I64,
         _ => types::I64,
     }
 }
@@ -344,8 +349,178 @@ pub fn clif_type_to_dust(ty: Type) -> String {
         types::I16 => "i16".to_string(),
         types::I32 => "i32".to_string(),
         types::I64 => "i64".to_string(),
+        types::I128 => "i128".to_string(),
         types::F32 => "f32".to_string(),
         types::F64 => "f64".to_string(),
         _ => "i64".to_string(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v0.2 Runtime Support
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn gen_spawn_thread(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    func_ptr: Value,
+    seed: Option<Value>,
+) -> Value {
+    // Spawn a new thread
+    let spawn_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64), AbiParam::new(types::I64)]
+        .into(),
+    );
+    let spawn_fn = builder.create_sized_stack_function(
+        spawn_sig,
+        ExternalName::libcall("thread_spawn".to_string()),
+    );
+    
+    match seed {
+        Some(s) => builder.ins().call(spawn_fn, &[func_ptr, s]),
+        None => {
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().call(spawn_fn, &[func_ptr, zero])
+        }
+    }
+}
+
+pub fn gen_join_thread(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    thread_handle: Value,
+) -> Value {
+    // Join a thread and get result
+    let join_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64)].into(),
+    );
+    let join_fn = builder.create_sized_stack_function(
+        join_sig,
+        ExternalName::libcall("thread_join".to_string()),
+    );
+    builder.ins().call(join_fn, &[thread_handle])
+}
+
+pub fn gen_mutex_new(&mut self, builder: &mut FunctionBuilder) -> Value {
+    // Create a new mutex
+    let mutex_sig = builder.import_signature(vec![].into());
+    let mutex_fn = builder.create_sized_stack_function(
+        mutex_sig,
+        ExternalName::libcall("mutex_new".to_string()),
+    );
+    builder.ins().call(mutex_fn, &[])
+}
+
+pub fn gen_mutex_lock(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    mutex: Value,
+) {
+    // Lock a mutex
+    let lock_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64)].into(),
+    );
+    let lock_fn = builder.create_sized_stack_function(
+        lock_sig,
+        ExternalName::libcall("mutex_lock".to_string()),
+    );
+    builder.ins().call(lock_fn, &[mutex]);
+}
+
+pub fn gen_mutex_unlock(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    mutex: Value,
+) {
+    // Unlock a mutex
+    let unlock_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64)].into(),
+    );
+    let unlock_fn = builder.create_sized_stack_function(
+        unlock_sig,
+        ExternalName::libcall("mutex_unlock".to_string()),
+    );
+    builder.ins().call(unlock_fn, &[mutex]);
+}
+
+pub fn gen_file_open(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    path_ptr: Value,
+    mode: Value,
+) -> Value {
+    // Open a file
+    let open_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64), AbiParam::new(types::I64)]
+        .into(),
+    );
+    let open_fn = builder.create_sized_stack_function(
+        open_sig,
+        ExternalName::libcall("file_open".to_string()),
+    );
+    builder.ins().call(open_fn, &[path_ptr, mode])
+}
+
+pub fn gen_file_read(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    file: Value,
+    buffer: Value,
+    n: Value,
+) -> Value {
+    // Read from file
+    let read_sig = builder.import_signature(
+        vec![
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+        ]
+        .into(),
+    );
+    let read_fn = builder.create_sized_stack_function(
+        read_sig,
+        ExternalName::libcall("file_read".to_string()),
+    );
+    builder.ins().call(read_fn, &[file, buffer, n])
+}
+
+pub fn gen_file_write(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    file: Value,
+    buffer: Value,
+    n: Value,
+) -> Value {
+    // Write to file
+    let write_sig = builder.import_signature(
+        vec![
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+        ]
+        .into(),
+    );
+    let write_fn = builder.create_sized_stack_function(
+        write_sig,
+        ExternalName::libcall("file_write".to_string()),
+    );
+    builder.ins().call(write_fn, &[file, buffer, n])
+}
+
+pub fn gen_file_close(
+    &mut self,
+    builder: &mut FunctionBuilder,
+    file: Value,
+) {
+    // Close file
+    let close_sig = builder.import_signature(
+        vec![AbiParam::new(types::I64)].into(),
+    );
+    let close_fn = builder.create_sized_stack_function(
+        close_sig,
+        ExternalName::libcall("file_close".to_string()),
+    );
+    builder.ins().call(close_fn, &[file]);
+}
     }
 }

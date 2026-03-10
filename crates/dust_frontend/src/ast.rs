@@ -231,20 +231,33 @@ pub enum PrimitiveType {
     I16,
     I32,
     I64,
+    I128,
     U8,
     U16,
     U32,
     U64,
+    U128,
     F32,
     F64,
     String,
     Char,
+    // v0.2 Resource Types
+    Mem,
+    Thread,
+    Mutex,
+    File,
+    Port,
+    Device,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeRef {
     Primitive(PrimitiveType),
     Named(Ident),
+    Generic {
+        base: Ident,
+        args: Vec<Spanned<TypeRef>>,
+    },
     Array {
         elem: Box<Spanned<TypeRef>>,
         len: usize,
@@ -281,6 +294,7 @@ pub struct Block {
 pub enum Stmt {
     Let(LetStmt),
     MutLet(MutLetStmt),
+    Assign(AssignStmt),
     Constrain(ConstrainStmt),
     Prove(ProveStmt),
     Effect(EffectStmt),
@@ -291,6 +305,27 @@ pub enum Stmt {
     Break(BreakStmt),
     Continue(ContinueStmt),
     Expr(ExprStmt),
+    // v0.2 Memory statements
+    Alloc(AllocStmt),
+    Free(FreeStmt),
+    // v0.2 Concurrency statements
+    Spawn(SpawnStmt),
+    Join(JoinStmt),
+    // v0.2 Synchronization statements
+    MutexNew(MutexNewStmt),
+    MutexLock(MutexLockStmt),
+    MutexUnlock(MutexUnlockStmt),
+    // v0.2 I/O statements
+    Open(OpenStmt),
+    Read(ReadStmt),
+    Write(WriteStmt),
+    Close(CloseStmt),
+    IoRead(IoReadStmt),
+    IoWrite(IoWriteStmt),
+    MmioRead(MmioReadStmt),
+    MmioWrite(MmioWriteStmt),
+    // v0.2 Unsafe block
+    Unsafe(UnsafeStmt),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -304,6 +339,12 @@ pub struct LetStmt {
 pub struct MutLetStmt {
     pub name: Ident,
     pub ty: Option<Spanned<TypeRef>>,
+    pub expr: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssignStmt {
+    pub target: Ident,
     pub expr: Spanned<Expr>,
 }
 
@@ -388,6 +429,108 @@ pub struct ReturnStmt {
     pub expr: Spanned<Expr>,
 }
 
+// v0.2 Memory Statements
+#[derive(Debug, Clone, PartialEq)]
+pub struct AllocStmt {
+    pub name: Ident,
+    pub size: Spanned<Expr>,
+    pub ty: Option<Spanned<TypeRef>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreeStmt {
+    pub expr: Spanned<Expr>,
+}
+
+// v0.2 Concurrency Statements
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnStmt {
+    pub name: Ident,
+    pub callee: Spanned<Expr>,
+    pub seed: Option<Spanned<Expr>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinStmt {
+    pub name: Ident,
+    pub thread: Spanned<Expr>,
+}
+
+// v0.2 Mutex Statements
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutexNewStmt {
+    pub name: Ident,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutexLockStmt {
+    pub mutex: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutexUnlockStmt {
+    pub mutex: Spanned<Expr>,
+}
+
+// v0.2 I/O Statements
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenStmt {
+    pub name: Ident,
+    pub path: Spanned<Expr>,
+    pub mode: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadStmt {
+    pub name: Ident,
+    pub file: Spanned<Expr>,
+    pub buffer: Spanned<Expr>,
+    pub n: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteStmt {
+    pub name: Ident,
+    pub file: Spanned<Expr>,
+    pub buffer: Spanned<Expr>,
+    pub n: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloseStmt {
+    pub file: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IoReadStmt {
+    pub name: Ident,
+    pub port: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IoWriteStmt {
+    pub port: Spanned<Expr>,
+    pub value: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmioReadStmt {
+    pub name: Ident,
+    pub addr: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmioWriteStmt {
+    pub addr: Spanned<Expr>,
+    pub value: Spanned<Expr>,
+}
+
+// v0.2 Unsafe Block
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnsafeStmt {
+    pub body: Block,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Expressions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -406,6 +549,11 @@ pub enum Expr {
     Array(Vec<Spanned<Expr>>),
     StructLit(Box<Spanned<StructLitExpr>>),
     Match(Box<Spanned<MatchExpr>>),
+    // v0.2 Expressions (boxed to avoid recursion)
+    Alloc(Box<AllocExpr>),
+    Spawn(Box<SpawnExpr>),
+    Join(Box<JoinExpr>),
+    MutexNew(Box<MutexNewExpr>),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -477,3 +625,24 @@ pub struct FieldInit {
     pub name: Ident,
     pub expr: Spanned<Expr>,
 }
+
+// v0.2 Expression variants
+#[derive(Debug, Clone, PartialEq)]
+pub struct AllocExpr {
+    pub size: Spanned<Expr>,
+    pub ty: Option<Spanned<TypeRef>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnExpr {
+    pub callee: Spanned<Expr>,
+    pub seed: Option<Spanned<Expr>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinExpr {
+    pub thread: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutexNewExpr;

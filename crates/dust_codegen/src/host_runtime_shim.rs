@@ -202,6 +202,69 @@ struct ObjectSection {
     data: Vec<u8>,
 }
 
+// v0.2 staged host-call shims for K-regime system effect intrinsics.
+// These provide deterministic link-time/runtime placeholders until full
+// runtime-backed semantics are wired into the host runtime layer.
+
+#[no_mangle]
+pub extern "C" fn alloc(size: u64) -> u64 {
+    if size == 0 {
+        1
+    } else {
+        size
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn free(_ptr: u64) -> u64 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn spawn(_entry: u64, seed: u64) -> u64 {
+    seed
+}
+
+#[no_mangle]
+pub extern "C" fn join(thread: u64) -> u64 {
+    thread
+}
+
+#[no_mangle]
+pub extern "C" fn mutex_new() -> u64 {
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn mutex_lock(_mutex: u64) -> u64 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mutex_unlock(_mutex: u64) -> u64 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn io_read(_port: u64) -> u64 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn io_write(_port: u64, value: u64) -> u64 {
+    value
+}
+
+#[no_mangle]
+pub extern "C" fn mmio_read(_addr: u64) -> u64 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mmio_write(_addr: u64, value: u64) -> u64 {
+    value
+}
+
 #[derive(Clone, Default)]
 struct ObjectSymbol {
     name_hash: u64,

@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Function definition parsing with parameters and return types
 - Structure definition parsing
 - Memory operation parsing (`alloc`, `dealloc`, pointer operations)
+- Added type-first parameter parsing (`K[Int] x`) in addition to name-first (`x: K[Int]`)
+- Added assignment statement parsing (`x = expr;`)
+- Added block tail-expression implicit return parsing
+- Added `else if` parsing via nested-if lowering
+- Fixed numeric lexing so range syntax (`0..n`) does not tokenize as float + dot
+- Added match OR-pattern parsing (`a | b => ...`)
+- Added struct literal parsing in postfix form (`Type { field: expr, ... }`)
+- Added deterministic binary operator precedence parsing across logical/bitwise/comparison/shift/arithmetic levels
+- Added `unsafe { ... }` block-expression parsing in primary expression handling
+- Added generic type-form parsing (`Type<...>`) for v0.2 additions such as `Thread<type>`
+- Restored `bind` declaration parsing, including contract block clause parsing and proc references
+- Restored process `uses` clause parsing with named literal args
+- Restored effect statement parsing across all effect keywords (`observe`, `emit`, `seal`)
+- Added constraint/witness statement parsing (`constrain <expr>;`, `prove <ident> from <expr>;`)
 
 #### Lexer Updates
 - Float literal support (`3.14`)
@@ -38,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Type inference support
 - Type environment (`TypeEnv`) implementation
 - Type inferrer and checker
+- Added semantic validation for mutable assignment rules (`mut let` required for reassignment)
+- Added semantic validation for assignment to declared locals/params
+- Added loop-control validation (`break`/`continue` must appear inside loop bodies)
+- Added semantic validation that `constrain`/`prove` are restricted to Φ-regime processes
+- Added witness-local registration for `prove` statements in semantic scope tracking
+- Added semantic validation that Φ-regime effects require at least one witness-producing `prove`
+- Added semantic validation that cross-regime local proc calls require an explicit `bind` between caller/callee
 
 #### Memory Safety Analysis
 - Use-after-free detection
@@ -52,6 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Function call optimization
 - Extended DIR IR with v0.2 statements
 - New codegen framework (`v02_codegen.rs`)
+- Host codegen now lowers struct-literal bindings into flattened field slots (`name.field`) and resolves matching field-read payloads
+- Host codegen now handles direct struct literal expressions as deterministic opaque values in staged lowering
+- Host codegen now accepts lowered block-expression placeholders (`{ ... }`) as deterministic zero-valued expressions (staged support for parsed `unsafe` block forms)
+- Host codegen now treats unresolved identifier payloads that resolve to local K procedures as staged function-reference arguments (for v0.2 effect forms such as `spawn(worker, seed)`)
+- Host runtime shim now exports staged v0.2 system-effect symbols (`alloc`, `free`, `spawn`, `join`, `mutex_*`, `io_*`, `mmio_*`) to allow deterministic linking/build of effect-form programs
+- Host codegen now stages `observe` and `seal` effect lowering by evaluating payload expressions while deferring host-side effect emission semantics
+- Host codegen now stages `constrain` predicate lowering and materializes `prove` witness locals for deterministic host-path builds
 
 #### Build System
 - Project structure support (State.toml, sector directories)

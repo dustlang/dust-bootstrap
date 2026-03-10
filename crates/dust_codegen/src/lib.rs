@@ -122,6 +122,327 @@ fn decode_string_literal(payload: &str) -> Result<String> {
     Ok(out)
 }
 
+fn parse_char_literal_runtime(payload: &str) -> Result<Option<i64>> {
+    let p = payload.trim();
+    if !(p.starts_with('\'') && p.ends_with('\'') && p.len() >= 3) {
+        return Ok(None);
+    }
+
+    let inner = &p[1..p.len() - 1];
+    let ch = if let Some(stripped) = inner.strip_prefix('\\') {
+        match stripped {
+            "n" => '\n',
+            "r" => '\r',
+            "t" => '\t',
+            "'" => '\'',
+            "\\" => '\\',
+            "0" => '\0',
+            _ => bail!("unsupported char escape in literal: {}", payload),
+        }
+    } else {
+        let mut chars = inner.chars();
+        let c = chars
+            .next()
+            .ok_or_else(|| anyhow!("empty char literal: {}", payload))?;
+        if chars.next().is_some() {
+            bail!("multi-character char literal not supported: {}", payload);
+        }
+        c
+    };
+
+    Ok(Some(ch as i64))
+}
+
+#[derive(Debug, Clone)]
+struct MatchArmRuntime {
+    patterns: Vec<String>,
+    body: String,
+    is_wildcard: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StructLiteralRuntime {
+    ty_name: String,
+    fields: Vec<(String, String)>,
+}
+
+fn parse_match_expr_runtime(payload: &str) -> Result<Option<(String, Vec<MatchArmRuntime>)>> {
+    let p = payload.trim();
+    if !p.starts_with("match ") {
+        return Ok(None);
+    }
+
+    let rest = p["match".len()..].trim_start();
+    let open = rest
+        .find('{')
+        .ok_or_else(|| anyhow!("invalid match expression payload: {}", payload))?;
+    let close = rest
+        .rfind('}')
+        .ok_or_else(|| anyhow!("invalid match expression payload: {}", payload))?;
+    if close <= open {
+        bail!("invalid match expression payload: {}", payload);
+    }
+
+    let scrutinee = rest[..open].trim();
+    if scrutinee.is_empty() {
+        bail!("invalid match scrutinee in payload: {}", payload);
+    }
+
+    let arms_src = rest[open + 1..close].trim();
+    let raw_arms = split_top_level(arms_src, ',');
+    let mut arms = Vec::new();
+    for raw in raw_arms {
+        let arm_text = raw.trim();
+        if arm_text.is_empty() {
+            continue;
+        }
+        let fat_arrow = find_fat_arrow_top_level(arm_text)
+            .ok_or_else(|| anyhow!("invalid match arm payload: {}", arm_text))?;
+        let pattern_src = arm_text[..fat_arrow].trim();
+        let body_src = arm_text[fat_arrow + 2..].trim();
+        if pattern_src.is_empty() || body_src.is_empty() {
+            bail!("invalid match arm payload: {}", arm_text);
+        }
+
+        let pattern_parts = split_top_level(pattern_src, '|')
+            .into_iter()
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>();
+        if pattern_parts.is_empty() {
+            bail!("invalid empty match pattern in arm: {}", arm_text);
+        }
+
+        let is_wildcard = pattern_parts.iter().any(|patt| patt == "_");
+        let patterns = if is_wildcard {
+            Vec::new()
+        } else {
+            pattern_parts
+        };
+
+        arms.push(MatchArmRuntime {
+            patterns,
+            body: body_src.to_string(),
+            is_wildcard,
+        });
+    }
+
+    if arms.is_empty() {
+        bail!("match expression has no arms: {}", payload);
+    }
+
+    Ok(Some((scrutinee.to_string(), arms)))
+}
+
+fn parse_struct_lit_runtime(payload: &str) -> Result<Option<StructLiteralRuntime>> {
+    let p = payload.trim();
+    if p.is_empty() {
+        return Ok(None);
+    }
+
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut open_brace: Option<usize> = None;
+    let mut close_brace: Option<usize> = None;
+
+    for (idx, ch) in p.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    open_brace = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Ok(None);
+                }
+                if depth == 0 {
+                    close_brace = Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if depth != 0 {
+        return Ok(None);
+    }
+
+    let Some(open) = open_brace else {
+        return Ok(None);
+    };
+    let Some(close) = close_brace else {
+        return Ok(None);
+    };
+
+    if close != p.len() - 1 || close <= open {
+        return Ok(None);
+    }
+
+    let ty_name = p[..open].trim();
+    if ty_name.is_empty() || !is_identifier_like(ty_name) {
+        return Ok(None);
+    }
+
+    let fields_src = p[open + 1..close].trim();
+    let mut fields = Vec::new();
+    if !fields_src.is_empty() {
+        for raw in split_top_level(fields_src, ',') {
+            let entry = raw.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let colon = find_char_top_level(entry, ':')
+                .ok_or_else(|| anyhow!("invalid struct literal field initializer: {}", entry))?;
+            let name = entry[..colon].trim();
+            let expr = entry[colon + 1..].trim();
+            if name.is_empty() || expr.is_empty() {
+                bail!("invalid struct literal field initializer: {}", entry);
+            }
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                bail!("invalid struct field name in literal: {}", name);
+            }
+            fields.push((name.to_string(), expr.to_string()));
+        }
+    }
+
+    Ok(Some(StructLiteralRuntime {
+        ty_name: ty_name.to_string(),
+        fields,
+    }))
+}
+
+fn find_char_top_level(src: &str, target: char) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for (idx, ch) in src.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            c if c == target && depth == 0 => return Some(idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_fat_arrow_top_level(src: &str) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let ch = bytes[i] as char;
+        if in_string {
+            if escape {
+                escape = false;
+                i += 1;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                i += 1;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '=' if depth == 0 && bytes[i + 1] as char == '>' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn split_top_level(src: &str, delimiter: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut start = 0usize;
+
+    for (idx, ch) in src.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            c if c == delimiter && depth == 0 => {
+                let part = src[start..idx].trim();
+                if !part.is_empty() {
+                    out.push(part.to_string());
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let tail = src[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 struct HostImport {
     func_id: FuncId,
@@ -418,6 +739,61 @@ fn lower_stmt_list(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn lower_struct_literal_binding(
+    module: &mut ObjectModule,
+    proc_index: &ScopedProcIndex,
+    proc_ids: &HashMap<String, FuncId>,
+    imports: &mut HashMap<String, HostImport>,
+    string_data: &mut HashMap<String, cranelift_module::DataId>,
+    b: &mut FunctionBuilder,
+    frame: &mut HostProcFrame,
+    target: &str,
+    expr: &str,
+    word_ty: Type,
+) -> Result<bool> {
+    let Some(struct_lit) = parse_struct_lit_runtime(expr)? else {
+        return Ok(false);
+    };
+
+    let _ty_name = struct_lit.ty_name;
+    let marker = b.ins().iconst(word_ty, 0);
+    frame.set_var(b, target, marker, word_ty);
+
+    for (field, field_expr) in struct_lit.fields {
+        let field_key = format!("{}.{}", target, field);
+        if lower_struct_literal_binding(
+            module,
+            proc_index,
+            proc_ids,
+            imports,
+            string_data,
+            b,
+            frame,
+            &field_key,
+            &field_expr,
+            word_ty,
+        )? {
+            continue;
+        }
+
+        let value = lower_expr(
+            module,
+            proc_index,
+            proc_ids,
+            imports,
+            string_data,
+            b,
+            frame,
+            &field_expr,
+            word_ty,
+        )?;
+        frame.set_var(b, &field_key, value, word_ty);
+    }
+
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn lower_stmt(
     module: &mut ObjectModule,
     proc_index: &ScopedProcIndex,
@@ -431,6 +807,21 @@ fn lower_stmt(
 ) -> Result<bool> {
     match stmt {
         DirStmt::Let { name, expr } => {
+            if lower_struct_literal_binding(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                name,
+                expr,
+                word_ty,
+            )? {
+                return Ok(true);
+            }
+
             let value = lower_expr(
                 module,
                 proc_index,
@@ -446,6 +837,21 @@ fn lower_stmt(
             Ok(true)
         }
         DirStmt::Assign { target, expr } => {
+            if lower_struct_literal_binding(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                target,
+                expr,
+                word_ty,
+            )? {
+                return Ok(true);
+            }
+
             let value = lower_expr(
                 module,
                 proc_index,
@@ -482,6 +888,39 @@ fn lower_stmt(
             }
             Ok(true)
         }
+        DirStmt::Constrain { predicate } => {
+            // Staged host lowering: force predicate expression to lower for deterministic
+            // validation, but do not enforce constraint solving in this path yet.
+            let _ = lower_expr(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                predicate,
+                word_ty,
+            )?;
+            Ok(true)
+        }
+        DirStmt::Prove { name, from } => {
+            // Staged host lowering: materialize witness as a named local bound to the
+            // proven source expression until full witness semantics are implemented.
+            let value = lower_expr(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                from,
+                word_ty,
+            )?;
+            frame.set_var(b, name, value, word_ty);
+            Ok(true)
+        }
         DirStmt::Effect { kind, payload } if kind == "emit" => {
             let text = decode_string_literal(payload)
                 .with_context(|| format!("emit payload must be string literal: {}", payload))?;
@@ -492,6 +931,22 @@ fn lower_stmt(
             Ok(true)
         }
         DirStmt::Effect { kind, payload } if kind == "expr" => {
+            let _ = lower_expr(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                payload,
+                word_ty,
+            )?;
+            Ok(true)
+        }
+        DirStmt::Effect { kind, payload } if kind == "observe" || kind == "seal" => {
+            // Staged host-lowering semantics: evaluate effect payload for determinism,
+            // but do not emit host side effects yet.
             let _ = lower_expr(
                 module,
                 proc_index,
@@ -753,6 +1208,10 @@ fn lower_expr(
         bail!("empty expression in host codegen");
     }
 
+    if trimmed == "{ ... }" {
+        return Ok(b.ins().iconst(word_ty, 0));
+    }
+
     if let Some(inner) = strip_wrapping_parens(trimmed) {
         return lower_expr(
             module,
@@ -778,8 +1237,34 @@ fn lower_expr(
     if trimmed == "false" {
         return Ok(b.ins().iconst(word_ty, 0));
     }
+    if let Some(ch) = parse_char_literal_runtime(trimmed)? {
+        return Ok(b.ins().iconst(word_ty, ch));
+    }
     if let Ok(value) = trimmed.parse::<i64>() {
         return Ok(b.ins().iconst(word_ty, value));
+    }
+    if let Ok(value) = trimmed.parse::<f64>() {
+        // Temporary host-codegen numeric unification:
+        // treat float literals as deterministic integer truncation.
+        return Ok(b.ins().iconst(word_ty, value as i64));
+    }
+
+    if let Some(struct_lit) = parse_struct_lit_runtime(trimmed)? {
+        let _ty_name = struct_lit.ty_name;
+        for (_, field_expr) in struct_lit.fields {
+            let _ = lower_expr(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                &field_expr,
+                word_ty,
+            )?;
+        }
+        return Ok(b.ins().iconst(word_ty, 0));
     }
 
     if let Some((op, operand)) = parse_unary_expr(trimmed) {
@@ -823,6 +1308,113 @@ fn lower_expr(
         return lower_binary_op(b, &op, lhs_value, rhs_value, word_ty);
     }
 
+    if let Some((scrutinee, arms)) = parse_match_expr_runtime(trimmed)? {
+        let scrutinee_value = lower_expr(
+            module,
+            proc_index,
+            proc_ids,
+            imports,
+            string_data,
+            b,
+            frame,
+            &scrutinee,
+            word_ty,
+        )?;
+
+        let result_block = b.create_block();
+        b.append_block_param(result_block, word_ty);
+
+        let dispatch_start = b.create_block();
+        b.ins().jump(dispatch_start, &[]);
+
+        let mut pending_block = dispatch_start;
+        let mut has_fallthrough = true;
+
+        for arm in &arms {
+            b.switch_to_block(pending_block);
+
+            let arm_block = b.create_block();
+
+            if arm.is_wildcard {
+                b.ins().jump(arm_block, &[]);
+                b.seal_block(pending_block);
+
+                b.switch_to_block(arm_block);
+                let arm_value = lower_expr(
+                    module,
+                    proc_index,
+                    proc_ids,
+                    imports,
+                    string_data,
+                    b,
+                    frame,
+                    &arm.body,
+                    word_ty,
+                )?;
+                b.ins().jump(result_block, &[arm_value]);
+                b.seal_block(arm_block);
+
+                has_fallthrough = false;
+                break;
+            }
+
+            let next_block = b.create_block();
+
+            let mut cond_opt: Option<Value> = None;
+            for pattern in &arm.patterns {
+                let pat_value = lower_expr(
+                    module,
+                    proc_index,
+                    proc_ids,
+                    imports,
+                    string_data,
+                    b,
+                    frame,
+                    pattern,
+                    word_ty,
+                )?;
+                let eq = b.ins().icmp(IntCC::Equal, scrutinee_value, pat_value);
+                cond_opt = Some(if let Some(prev) = cond_opt {
+                    b.ins().bor(prev, eq)
+                } else {
+                    eq
+                });
+            }
+
+            let cond = cond_opt.ok_or_else(|| anyhow!("match arm has no patterns"))?;
+            b.ins().brif(cond, arm_block, &[], next_block, &[]);
+            b.seal_block(pending_block);
+
+            b.switch_to_block(arm_block);
+            let arm_value = lower_expr(
+                module,
+                proc_index,
+                proc_ids,
+                imports,
+                string_data,
+                b,
+                frame,
+                &arm.body,
+                word_ty,
+            )?;
+            b.ins().jump(result_block, &[arm_value]);
+            b.seal_block(arm_block);
+
+            pending_block = next_block;
+        }
+
+        if has_fallthrough {
+            b.switch_to_block(pending_block);
+            let zero = b.ins().iconst(word_ty, 0);
+            b.ins().jump(result_block, &[zero]);
+            b.seal_block(pending_block);
+        }
+
+        b.switch_to_block(result_block);
+        b.seal_block(result_block);
+        return Ok(b.block_params(result_block)[0]);
+    }
+
     if let Some((target, args)) = parse_call_expr_runtime(trimmed)? {
         return lower_call(
             module,
@@ -839,7 +1431,14 @@ fn lower_expr(
     }
 
     if is_identifier_like(trimmed) {
-        return frame.get_var(b, trimmed);
+        if let Ok(value) = frame.get_var(b, trimmed) {
+            return Ok(value);
+        }
+        if resolve_callee_proc(proc_index, &frame.current_forge, trimmed).is_ok() {
+            // Staged host-lowering support for function-reference identifiers
+            // used by v0.2-style effect calls (e.g., spawn(worker, seed)).
+            return Ok(b.ins().iconst(word_ty, 0));
+        }
     }
 
     bail!("unsupported expression in host codegen: {}", trimmed)
@@ -1226,47 +1825,7 @@ fn parse_call_expr_runtime(payload: &str) -> Result<Option<(String, Vec<String>)
 }
 
 fn split_args_top_level(src: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth: i32 = 0;
-    let mut in_string = false;
-    let mut escape = false;
-    let mut start = 0usize;
-
-    for (idx, ch) in src.char_indices() {
-        if in_string {
-            if escape {
-                escape = false;
-                continue;
-            }
-            if ch == '\\' {
-                escape = true;
-                continue;
-            }
-            if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                let arg = src[start..idx].trim();
-                if !arg.is_empty() {
-                    out.push(arg.to_string());
-                }
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    let tail = src[start..].trim();
-    if !tail.is_empty() {
-        out.push(tail.to_string());
-    }
-    out
+    split_top_level(src, ',')
 }
 
 fn is_identifier_like(token: &str) -> bool {
@@ -2104,6 +2663,32 @@ fn collect_emit_strings_from_stmts_scoped(
                         Err(_) if allow_unresolved_calls => continue,
                         Err(e) => return Err(e),
                     };
+                    collect_call_target_scoped(
+                        current_forge,
+                        &callee_text,
+                        &args,
+                        proc_index,
+                        call_stack,
+                        out,
+                        allow_unresolved_calls,
+                    )?;
+                }
+            }
+            DirStmt::Constrain { predicate } => {
+                if let Ok((callee_text, args)) = parse_call_expr(predicate) {
+                    collect_call_target_scoped(
+                        current_forge,
+                        &callee_text,
+                        &args,
+                        proc_index,
+                        call_stack,
+                        out,
+                        allow_unresolved_calls,
+                    )?;
+                }
+            }
+            DirStmt::Prove { from, .. } => {
+                if let Ok((callee_text, args)) = parse_call_expr(from) {
                     collect_call_target_scoped(
                         current_forge,
                         &callee_text,

@@ -121,6 +121,7 @@ pub enum Token {
     OrOr,       // ||
     DotDot,     // ..
     Bang,       // !
+    BangEq,     // !=
     Underscore, // _
     FatArrow,   // =>
     Amp,        // & (bitwise AND)
@@ -222,22 +223,6 @@ impl<'a> Lexer<'a> {
                 }
                 return Ok(self.span(Token::Eq, start, self.i as u32));
             }
-            b'<' => {
-                self.bump();
-                if self.peek_u8() == Some(b'=') {
-                    self.bump();
-                    return Ok(self.span(Token::Lte, start, self.i as u32));
-                }
-                return Ok(self.span(Token::Lt, start, self.i as u32));
-            }
-            b'>' => {
-                self.bump();
-                if self.peek_u8() == Some(b'=') {
-                    self.bump();
-                    return Ok(self.span(Token::Gte, start, self.i as u32));
-                }
-                return Ok(self.span(Token::Gt, start, self.i as u32));
-            }
             b'&' => {
                 self.bump();
                 if self.peek_u8() == Some(b'&') {
@@ -293,6 +278,10 @@ impl<'a> Lexer<'a> {
             }
             b'!' => {
                 self.bump();
+                if self.peek_u8() == Some(b'=') {
+                    self.bump();
+                    return Ok(self.span(Token::BangEq, start, self.i as u32));
+                }
                 return Ok(self.span(Token::Bang, start, self.i as u32));
             }
             b'"' => return self.lex_string(),
@@ -307,6 +296,10 @@ impl<'a> Lexer<'a> {
                     if (b'0'..=b'9').contains(&b) {
                         self.bump();
                     } else if b == b'.' {
+                        // `0..5` must lex as Int + DotDot, not Float + Dot.
+                        if self.peek2_u8() == Some(b'.') {
+                            break;
+                        }
                         // It's a float!
                         return self.lex_float();
                     } else {
